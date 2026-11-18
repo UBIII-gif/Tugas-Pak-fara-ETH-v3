@@ -1,4 +1,4 @@
-import 'package:web3dart/web3dart.dart';
+import 'package:reown_appkit/reown_appkit.dart';
 
 /// Satu sertifikat yang dibaca dari smart contract.
 class Sertifikat {

@@ -11,11 +11,13 @@ class SertifikatCard extends StatelessWidget {
     super.key,
     required this.sertifikat,
     required this.milikSaya,
+    required this.onEdit,
     required this.onCabut,
   });
 
   final Sertifikat sertifikat;
   final bool milikSaya;
+  final VoidCallback onEdit;
   final VoidCallback onCabut;
 
   @override
@@ -32,6 +34,7 @@ class SertifikatCard extends StatelessWidget {
           context,
           s,
           milikSaya: milikSaya,
+          onEdit: onEdit,
           onCabut: onCabut,
         ),
         child: Padding(
@@ -80,14 +83,20 @@ class SertifikatCard extends StatelessWidget {
                     Icon(Icons.account_balance_wallet_outlined,
                         size: 16, color: tema.colorScheme.primary),
                     const SizedBox(width: 6),
-                    Text(
-                      'Diterbitkan wallet Anda',
-                      style: tema.textTheme.labelMedium?.copyWith(
-                        color: tema.colorScheme.primary,
+                    Expanded(
+                      child: Text(
+                        'Diterbitkan wallet Anda',
+                        style: tema.textTheme.labelMedium?.copyWith(
+                          color: tema.colorScheme.primary,
+                        ),
                       ),
                     ),
-                    const Spacer(),
-                    if (s.valid)
+                    if (s.valid) ...[
+                      TextButton.icon(
+                        onPressed: onEdit,
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        label: const Text('Edit'),
+                      ),
                       TextButton.icon(
                         onPressed: onCabut,
                         icon: const Icon(Icons.block, size: 18),
@@ -96,6 +105,7 @@ class SertifikatCard extends StatelessWidget {
                           foregroundColor: tema.colorScheme.error,
                         ),
                       ),
+                    ],
                   ],
                 ),
               ],
@@ -141,6 +151,7 @@ Future<void> tampilkanDetailSertifikat(
   BuildContext context,
   Sertifikat s, {
   required bool milikSaya,
+  required VoidCallback onEdit,
   required VoidCallback onCabut,
 }) {
   return showModalBottomSheet<void>(
@@ -182,20 +193,34 @@ Future<void> tampilkanDetailSertifikat(
             ),
             if (milikSaya && s.valid) ...[
               const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    onCabut();
-                  },
-                  icon: const Icon(Icons.block),
-                  label: const Text('Cabut sertifikat'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Theme.of(ctx).colorScheme.error,
-                    foregroundColor: Theme.of(ctx).colorScheme.onError,
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        onEdit();
+                      },
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Edit nama'),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        onCabut();
+                      },
+                      icon: const Icon(Icons.block),
+                      label: const Text('Cabut'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Theme.of(ctx).colorScheme.error,
+                        foregroundColor: Theme.of(ctx).colorScheme.onError,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ],

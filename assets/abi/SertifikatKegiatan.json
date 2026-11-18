@@ -24,6 +24,25 @@
 			{
 				"indexed": false,
 				"internalType": "string",
+				"name": "namaKegiatanBaru",
+				"type": "string"
+			}
+		],
+		"name": "SertifikatDiedit",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "id",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
 				"name": "hashBerkas",
 				"type": "string"
 			},
@@ -101,6 +120,24 @@
 		"type": "function"
 	},
 	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "id",
+				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "namaKegiatanBaru",
+				"type": "string"
+			}
+		],
+		"name": "editNamaKegiatan",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
 		"inputs": [],
 		"name": "jumlahSertifikat",
 		"outputs": [
@@ -136,4 +173,4 @@
 		"stateMutability": "nonpayable",
 		"type": "function"
 	}
-]
+]	

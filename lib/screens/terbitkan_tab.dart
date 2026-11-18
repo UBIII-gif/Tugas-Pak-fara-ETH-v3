@@ -1,13 +1,17 @@
+import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../services/blockchain_service.dart';
-import '../utils/file_hash.dart';
 import '../utils/format.dart';
-import '../utils/salin.dart';
 import '../widgets/tx_dialog.dart';
 
 class TerbitkanTab extends StatefulWidget {
-  const TerbitkanTab({super.key, required this.service, required this.onBerhasil});
+  const TerbitkanTab({
+    super.key,
+    required this.service,
+    required this.onBerhasil,
+  });
 
   final BlockchainService service;
   final VoidCallback onBerhasil;
@@ -18,76 +22,74 @@ class TerbitkanTab extends StatefulWidget {
 
 class _TerbitkanTabState extends State<TerbitkanTab> {
   final _formKey = GlobalKey<FormState>();
-  final _namaKegiatan = TextEditingController();
-  final _namaPenerbit = TextEditingController();
+  final _namaKegiatanC = TextEditingController();
+  final _namaPenerbitC = TextEditingController();
 
-  HasilFile? _file;
-  bool _memprosesFile = false;
-  String? _errorFile;
+  String? _namaFile;
+  String? _hashBerkas;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.service.addListener(_refresh);
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
-    _namaKegiatan.dispose();
-    _namaPenerbit.dispose();
+    widget.service.removeListener(_refresh);
+    _namaKegiatanC.dispose();
+    _namaPenerbitC.dispose();
     super.dispose();
   }
 
-  Future<void> _pilihFile() async {
+  Future<void> _pilihBerkas() async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'png', 'jpg', 'jpeg'],
+      withData: true,
+    );
+    if (res == null || res.files.isEmpty) return;
+
+    final file = res.files.first;
+    final bytes = file.bytes;
+    if (bytes == null) return;
+
+    final digest = sha256.convert(bytes).toString();
     setState(() {
-      _memprosesFile = true;
-      _errorFile = null;
+      _namaFile = file.name;
+      _hashBerkas = digest;
     });
-    try {
-      final hasil = await pilihDanHashFile();
-      if (!mounted) return;
-      if (hasil != null) setState(() => _file = hasil);
-    } catch (e) {
-      if (mounted) setState(() => _errorFile = 'Gagal membaca file: $e');
-    } finally {
-      if (mounted) setState(() => _memprosesFile = false);
-    }
   }
 
-  Future<void> _terbitkan() async {
-    if (!_formKey.currentState!.validate()) return;
-    final file = _file;
-    if (file == null) {
-      setState(() => _errorFile = 'Pilih file sertifikat terlebih dahulu.');
+  Future<void> _kirim() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_hashBerkas == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pilih file sertifikat terlebih dahulu.')),
+      );
       return;
     }
-    FocusScope.of(context).unfocus();
-
-    final kegiatan = _namaKegiatan.text.trim();
-    final penerbit = _namaPenerbit.text.trim();
 
     final sukses = await jalankanTransaksi(
       context,
       service: widget.service,
-      judul: 'Menerbitkan sertifikat',
-      kirim: () async {
-        // Cek duplikat dulu agar user tidak membuang gas untuk transaksi yang pasti ditolak.
-        final cek = await widget.service.verifikasiHash(file.hash);
-        if (cek.ditemukan) {
-          throw TransaksiException(
-            'File ini sudah terdaftar sebagai sertifikat #${cek.id}. '
-            'Satu file hanya bisa diterbitkan satu kali.',
-          );
-        }
-        return widget.service.terbitkanSertifikat(
-          hashBerkas: file.hash,
-          namaKegiatan: kegiatan,
-          namaPenerbit: penerbit,
-        );
-      },
+      judul: 'Konfirmasi penerbitan di wallet...',
+      kirim: () => widget.service.terbitkanSertifikat(
+        hashBerkas: _hashBerkas!,
+        namaKegiatan: _namaKegiatanC.text.trim(),
+        namaPenerbit: _namaPenerbitC.text.trim(),
+      ),
     );
 
     if (sukses && mounted) {
-      _formKey.currentState?.reset();
-      _namaKegiatan.clear();
-      _namaPenerbit.clear();
+      _namaKegiatanC.clear();
       setState(() {
-        _file = null;
-        _errorFile = null;
+        _namaFile = null;
+        _hashBerkas = null;
       });
       widget.onBerhasil();
     }
@@ -96,147 +98,110 @@ class _TerbitkanTabState extends State<TerbitkanTab> {
   @override
   Widget build(BuildContext context) {
     final tema = Theme.of(context);
-    final file = _file;
+    final wallet = widget.service.alamatWallet;
 
-    return Form(
-      key: _formKey,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: tema.colorScheme.secondaryContainer,
-              borderRadius: BorderRadius.circular(12),
-            ),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      children: [
+        Card.outlined(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.lock_outline, color: tema.colorScheme.onSecondaryContainer),
+                Icon(
+                  wallet == null ? Icons.link_off : Icons.account_balance_wallet,
+                  color: wallet == null
+                      ? tema.colorScheme.error
+                      : tema.colorScheme.primary,
+                ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    'Hanya hash SHA-256 file yang dikirim ke blockchain. '
-                    'File dan data pribadi tetap ada di perangkat Anda.',
-                    style: TextStyle(color: tema.colorScheme.onSecondaryContainer),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Wallet Penerbit', style: tema.textTheme.labelMedium),
+                      Text(
+                        wallet == null
+                            ? 'Belum terhubung (klik Connect Wallet di atas)'
+                            : potongAlamat(wallet.hexEip55),
+                        style: tema.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
-          TextFormField(
-            controller: _namaKegiatan,
-            textInputAction: TextInputAction.next,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Nama kegiatan',
-              hintText: 'Seminar Nasional Teknologi 2026',
-              border: OutlineInputBorder(),
-            ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Nama kegiatan wajib diisi' : null,
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _namaPenerbit,
-            textInputAction: TextInputAction.done,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Nama penerbit',
-              hintText: 'Himpunan Mahasiswa Informatika',
-              border: OutlineInputBorder(),
-            ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Nama penerbit wajib diisi' : null,
-          ),
-          const SizedBox(height: 20),
-          OutlinedButton.icon(
-            onPressed: _memprosesFile ? null : _pilihFile,
-            icon: _memprosesFile
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.attach_file),
-            label: Text(
-              _memprosesFile
-                  ? 'Menghitung hash…'
-                  : 'Pilih file sertifikat (PDF/JPG/PNG)',
-            ),
-            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
-          ),
-          if (_errorFile != null) ...[
-            const SizedBox(height: 8),
-            Text(_errorFile!, style: TextStyle(color: tema.colorScheme.error)),
-          ],
-          if (file != null) ...[
-            const SizedBox(height: 12),
-            Card.outlined(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.description_outlined),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${file.nama} (${formatUkuran(file.ukuran)})',
-                            style: tema.textTheme.titleSmall,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'SHA-256',
-                      style: tema.textTheme.labelMedium?.copyWith(
-                        color: tema.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: SelectableText(
-                            file.hash,
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Salin hash',
-                          icon: const Icon(Icons.copy, size: 18),
-                          onPressed: () =>
-                              salinKeClipboard(context, file.hash, label: 'Hash'),
-                        ),
-                      ],
-                    ),
-                  ],
+        ),
+        const SizedBox(height: 16),
+        Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _pilihBerkas,
+                icon: const Icon(Icons.upload_file),
+                label: Text(_namaFile ?? 'Pilih berkas sertifikat (PDF / Gambar)'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
               ),
-            ),
-          ],
-          const SizedBox(height: 24),
-          FilledButton.icon(
-            onPressed: (file == null || _memprosesFile) ? null : _terbitkan,
-            icon: const Icon(Icons.send),
-            label: const Text('Terbitkan sertifikat'),
-            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+              if (_hashBerkas != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: tema.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'SHA-256: $_hashBerkas',
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _namaKegiatanC,
+                decoration: const InputDecoration(
+                  labelText: 'Nama kegiatan',
+                  hintText: 'Contoh: Seminar Nasional Teknologi 2026',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _namaPenerbitC,
+                decoration: const InputDecoration(
+                  labelText: 'Nama institusi / penerbit',
+                  hintText: 'Contoh: Jurusan Teknologi Informasi POLNES',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: wallet == null ? null : _kirim,
+                icon: const Icon(Icons.send),
+                label: Text(
+                  wallet == null
+                      ? 'Hubungkan wallet untuk menerbitkan'
+                      : 'Terbitkan ke blockchain',
+                ),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Biaya gas dibayar dari wallet ${potongAlamat(widget.service.alamatWallet.hexEip55)}.',
-            textAlign: TextAlign.center,
-            style: tema.textTheme.bodySmall?.copyWith(
-              color: tema.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

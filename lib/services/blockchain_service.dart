@@ -2,16 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
+import 'package:reown_appkit/reown_appkit.dart';
 import 'package:web3dart/crypto.dart';
-import 'package:web3dart/json_rpc.dart';
-import 'package:web3dart/web3dart.dart';
 
 import '../config/blockchain_config.dart';
 import '../models/sertifikat.dart';
 
-/// Error yang pesannya sudah siap ditampilkan ke user.
 class TransaksiException implements Exception {
   TransaksiException(this.pesan);
   final String pesan;
@@ -20,39 +19,39 @@ class TransaksiException implements Exception {
   String toString() => pesan;
 }
 
-/// Satu-satunya pintu komunikasi aplikasi dengan smart contract di Sepolia.
-class BlockchainService {
+class BlockchainService extends ChangeNotifier {
   BlockchainService._(
     Web3Client client,
     DeployedContract contract,
-    EthPrivateKey credentials,
   )   : _client = client,
         _contract = contract,
-        _credentials = credentials,
         _fnJumlah = contract.function('jumlahSertifikat'),
         _fnAmbil = contract.function('ambilSertifikat'),
         _fnTerbitkan = contract.function('terbitkanSertifikat'),
+        _fnEdit = contract.function('editNamaKegiatan'),
         _fnCabut = contract.function('cabutSertifikat'),
         _fnVerifikasi = _cariFungsi(contract, 'verifikasiHash'),
         _evTerbit = contract.event('SertifikatDiterbitkan'),
+        _evEdit = contract.event('SertifikatDiedit'),
         _evCabut = contract.event('SertifikatDicabut');
 
   final Web3Client _client;
   final DeployedContract _contract;
-  final EthPrivateKey _credentials;
+  ReownAppKitModal? _appKitModal;
+  String? reownError;
 
   final ContractFunction _fnJumlah;
   final ContractFunction _fnAmbil;
   final ContractFunction _fnTerbitkan;
+  final ContractFunction _fnEdit;
   final ContractFunction _fnCabut;
-  final ContractFunction? _fnVerifikasi; // null bila ABI tidak memuat verifikasiHash
+  final ContractFunction? _fnVerifikasi;
   final ContractEvent _evTerbit;
+  final ContractEvent _evEdit;
   final ContractEvent _evCabut;
 
   static const int _ukuranBatch = 5;
 
-  /// Membuat service: memuat ABI dari asset, menyiapkan client & credentials.
-  /// Tidak melakukan request jaringan.
   static Future<BlockchainService> buat() async {
     final abiJson = await rootBundle.loadString('assets/abi/SertifikatKegiatan.json');
     final contract = DeployedContract(
@@ -60,8 +59,57 @@ class BlockchainService {
       EthereumAddress.fromHex(BlockchainConfig.contractAddress),
     );
     final client = Web3Client(BlockchainConfig.rpcUrl, http.Client());
-    final credentials = EthPrivateKey.fromHex(BlockchainConfig.privateKey);
-    return BlockchainService._(client, contract, credentials);
+    return BlockchainService._(client, contract);
+  }
+
+  Future<void> initReown(BuildContext context) async {
+    if (_appKitModal != null) return;
+
+    try {
+      ReownAppKitModalNetworks.addSupportedNetworks('eip155', [
+        ReownAppKitModalNetworkInfo(
+          name: 'Sepolia',
+          chainId: '${BlockchainConfig.chainId}',
+          currency: 'ETH',
+          rpcUrl: BlockchainConfig.rpcUrl,
+          explorerUrl: 'https://sepolia.etherscan.io',
+        ),
+      ]);
+
+      final modal = ReownAppKitModal(
+        context: context,
+        projectId: BlockchainConfig.reownProjectId,
+        metadata: const PairingMetadata(
+          name: 'Sertifikat Kegiatan dApp',
+          description: 'Penerbitan & Verifikasi Sertifikat Digital di Sepolia',
+          url: 'https://sertifikat-dapp.local',
+          icons: ['https://walletconnect.com/walletconnect-logo.png'],
+        ),
+      );
+
+      modal.addListener(notifyListeners);
+      _appKitModal = modal;
+      notifyListeners();
+
+      await modal.init();
+      reownError = null;
+      notifyListeners();
+    } catch (e) {
+      reownError = e.toString();
+      debugPrint('Gagal init Reown: $e');
+      notifyListeners();
+    }
+  }
+
+  ReownAppKitModal? get appKitModal => _appKitModal;
+  bool get isConnected => _appKitModal?.isConnected ?? false;
+
+  EthereumAddress? get alamatWallet {
+    final modal = _appKitModal;
+    if (modal == null || !modal.isConnected || modal.session == null) return null;
+    final addrStr = modal.session!.getAddress('eip155');
+    if (addrStr == null || addrStr.isEmpty) return null;
+    return EthereumAddress.fromHex(addrStr);
   }
 
   static ContractFunction? _cariFungsi(DeployedContract c, String nama) {
@@ -71,14 +119,19 @@ class BlockchainService {
     return null;
   }
 
-  /// Alamat wallet penandatangan (diturunkan dari private key).
-  EthereumAddress get alamatWallet => _credentials.address;
+  @override
+  void dispose() {
+    _appKitModal?.removeListener(notifyListeners);
+    _client.dispose();
+    super.dispose();
+  }
 
-  void dispose() => _client.dispose();
-
-  // ---------------------------------------------------------------------
-  // BACA (gratis, tanpa transaksi)
-  // ---------------------------------------------------------------------
+  Future<double?> ambilSaldoEth() async {
+    final wallet = alamatWallet;
+    if (wallet == null) return null;
+    final saldoWei = await _client.getBalance(wallet);
+    return saldoWei.getValueInUnit(EtherUnit.ether);
+  }
 
   Future<int> jumlahSertifikat() async {
     final r = await _client.call(contract: _contract, function: _fnJumlah, params: []);
@@ -102,7 +155,6 @@ class BlockchainService {
     );
   }
 
-  /// Seluruh sertifikat, terbaru di atas (indeks 0-based: total - 1 turun ke 0).
   Future<List<Sertifikat>> ambilSemua() async {
     final total = await jumlahSertifikat();
     if (total == 0) return [];
@@ -117,7 +169,6 @@ class BlockchainService {
     return hasil;
   }
 
-  /// Mengecek apakah hash file terdaftar (indeks 0-based: total - 1 turun ke 0).
   Future<HasilVerifikasi> verifikasiHash(String hashBerkas) async {
     final hash = hashBerkas.trim();
     final fn = _fnVerifikasi;
@@ -150,28 +201,53 @@ class BlockchainService {
     return const HasilVerifikasi(ditemukan: false, id: -1, masihValid: false);
   }
 
-  // ---------------------------------------------------------------------
-  // TULIS (butuh tanda tangan & gas). Mengembalikan Transaction Hash.
-  // ---------------------------------------------------------------------
-
   Future<String> terbitkanSertifikat({
     required String hashBerkas,
     required String namaKegiatan,
     required String namaPenerbit,
   }) =>
-      _kirim(_fnTerbitkan, [hashBerkas, namaKegiatan, namaPenerbit]);
+      _kirimViaReown(_fnTerbitkan, [hashBerkas, namaKegiatan, namaPenerbit]);
 
-  Future<String> cabutSertifikat(int id) => _kirim(_fnCabut, [BigInt.from(id)]);
+  Future<String> editNamaKegiatan({
+    required int id,
+    required String namaKegiatanBaru,
+  }) =>
+      _kirimViaReown(_fnEdit, [BigInt.from(id), namaKegiatanBaru]);
 
-  Future<String> _kirim(ContractFunction fn, List<dynamic> parameter) {
-    return _client.sendTransaction(
-      _credentials,
-      Transaction.callContract(contract: _contract, function: fn, parameters: parameter),
-      chainId: BlockchainConfig.chainId,
+  Future<String> cabutSertifikat(int id) =>
+      _kirimViaReown(_fnCabut, [BigInt.from(id)]);
+
+  Future<String> _kirimViaReown(ContractFunction fn, List<dynamic> parameter) async {
+    final modal = _appKitModal;
+    final pengirim = alamatWallet;
+    if (modal == null || !modal.isConnected || modal.session == null || pengirim == null) {
+      throw TransaksiException('Hubungkan wallet terlebih dahulu melalui tombol Connect Wallet.');
+    }
+
+    final dataHex = bytesToHex(fn.encodeCall(parameter), include0x: true);
+    final chainNamespace = 'eip155:${BlockchainConfig.chainId}';
+
+    final hasil = await modal.request(
+      topic: modal.session!.topic,
+      chainId: chainNamespace,
+      request: SessionRequestParams(
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            'from': pengirim.hexEip55,
+            'to': BlockchainConfig.contractAddress,
+            'data': dataHex,
+          }
+        ],
+      ),
     );
+
+    if (hasil == null) {
+      throw TransaksiException('Transaksi dibatalkan di wallet.');
+    }
+    return hasil.toString();
   }
 
-  /// Menunggu transaksi masuk blok. Melempar error bila di-revert atau timeout.
   Future<TransactionReceipt> tungguKonfirmasi(
     String txHash, {
     Duration batasWaktu = const Duration(minutes: 3),
@@ -193,10 +269,6 @@ class BlockchainService {
     );
   }
 
-  // ---------------------------------------------------------------------
-  // [BONUS] Listener event agar daftar ter-update otomatis
-  // ---------------------------------------------------------------------
-
   Stream<String> pantauPerubahan() {
     final controller = StreamController<String>();
     final langganan = <StreamSubscription<FilterEvent>>[];
@@ -209,6 +281,13 @@ class BlockchainService {
             fromBlock: const BlockNum.current(),
           ))
           .listen((_) => controller.add('terbit'), onError: (_) {}));
+      langganan.add(_client
+          .events(FilterOptions.events(
+            contract: _contract,
+            event: _evEdit,
+            fromBlock: const BlockNum.current(),
+          ))
+          .listen((_) => controller.add('edit'), onError: (_) {}));
       langganan.add(_client
           .events(FilterOptions.events(
             contract: _contract,
@@ -225,24 +304,27 @@ class BlockchainService {
     return controller.stream;
   }
 
-  // ---------------------------------------------------------------------
-  // Pesan error yang ramah untuk user
-  // ---------------------------------------------------------------------
-
   static String pesanError(Object e) {
     if (e is TransaksiException) return e.pesan;
+    if (e is JsonRpcError) {
+      final pesan = (e.message ?? '').toLowerCase();
+      if (pesan.contains('rejected') || pesan.contains('denied')) {
+        return 'Permintaan tanda tangan ditolak di aplikasi wallet.';
+      }
+      return 'Wallet error (${e.code}):${e.message}';
+    }
     if (e is TimeoutException) return 'Permintaan ke jaringan melebihi batas waktu. Coba lagi.';
     if (e is RPCError) {
       final alasan = _alasanRevert(e.data);
       if (alasan != null) return 'Ditolak smart contract: $alasan';
       final pesan = e.message.toLowerCase();
       if (pesan.contains('insufficient funds')) {
-        return 'Saldo ETH Sepolia di wallet tidak cukup untuk membayar gas. Isi saldo lewat faucet.';
+        return 'Saldo ETH Sepolia di wallet tidak cukup untuk membayar gas.';
       }
       if (pesan.contains('execution reverted')) {
         return 'Ditolak smart contract: ${e.message.replaceFirst('execution reverted:', '').trim()}';
       }
-      return 'Error RPC (${e.errorCode}): ${e.message}';
+      return 'Error RPC (${e.errorCode}):${e.message}';
     }
     if (e is http.ClientException) {
       return 'Tidak ada koneksi internet atau RPC tidak bisa dijangkau.';
@@ -251,7 +333,6 @@ class BlockchainService {
     return e.toString();
   }
 
-  /// Membaca alasan revert `Error(string)` dari data RPC.
   static String? _alasanRevert(dynamic data) {
     if (data is! String || !data.startsWith('0x08c379a0')) return null;
     try {

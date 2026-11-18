@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:reown_appkit/reown_appkit.dart';
 
 import '../models/sertifikat.dart';
 import '../services/blockchain_service.dart';
@@ -38,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   int _tab = 0;
   List<Sertifikat> _data = const [];
+  double? _saldoEth;
   bool _sedangMemuat = false;
   String? _error;
   FilterDaftar _filter = FilterDaftar.semua;
@@ -46,21 +48,30 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    widget.service.addListener(_onWalletBerubah);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await widget.service.initReown(context);
+      if (mounted) setState(() {});
+    });
     _muat();
-    // [Bonus] daftar otomatis dimuat ulang saat ada event baru di kontrak.
     _langganan = widget.service
         .pantauPerubahan()
         .listen((_) => _muat(diam: true), onError: (_) {});
   }
 
+  void _onWalletBerubah() {
+    if (!mounted) return;
+    _muat(diam: true);
+    setState(() {});
+  }
+
   @override
   void dispose() {
+    widget.service.removeListener(_onWalletBerubah);
     _langganan?.cancel();
     super.dispose();
   }
 
-  /// [diam] = true: muat ulang tanpa spinner dan tanpa menampilkan error
-  /// (dipakai oleh listener event).
   Future<void> _muat({bool diam = false}) async {
     if (_sedangMemuat) return;
     if (diam) {
@@ -73,9 +84,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     try {
       final hasil = await widget.service.ambilSemua();
+      final saldo = await widget.service.ambilSaldoEth();
+
       if (!mounted) return;
       setState(() {
         _data = hasil;
+        _saldoEth = saldo;
         _error = null;
       });
     } catch (e) {
@@ -97,9 +111,56 @@ class _HomeScreenState extends State<HomeScreen> {
         case FilterDaftar.dicabut:
           return !s.valid;
         case FilterDaftar.milikku:
-          return s.diterbitkanOleh(wallet);
+          return wallet != null && s.diterbitkanOleh(wallet);
       }
     }).toList();
+  }
+
+  Future<void> _editNama(Sertifikat s) async {
+    final controller = TextEditingController(text: s.namaKegiatan);
+    final namaBaru = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Edit nama kegiatan #${s.id}'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Nama kegiatan baru',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final teks = controller.text.trim();
+              if (teks.isNotEmpty && teks != s.namaKegiatan) {
+                Navigator.pop(ctx, teks);
+              }
+            },
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (namaBaru == null || !mounted) return;
+
+    final sukses = await jalankanTransaksi(
+      context,
+      service: widget.service,
+      judul: 'Konfirmasi edit di wallet...',
+      kirim: () => widget.service.editNamaKegiatan(
+        id: s.id,
+        namaKegiatanBaru: namaBaru,
+      ),
+    );
+    if (sukses) _muat(diam: true);
   }
 
   Future<void> _cabut(Sertifikat s) async {
@@ -132,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final sukses = await jalankanTransaksi(
       context,
       service: widget.service,
-      judul: 'Mencabut sertifikat',
+      judul: 'Konfirmasi pencabutan di wallet...',
       kirim: () => widget.service.cabutSertifikat(s.id),
     );
     if (sukses) _muat(diam: true);
@@ -140,10 +201,32 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final modal = widget.service.appKitModal;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_judulTab[_tab]),
         actions: [
+          if (modal != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: AppKitModalConnectButton(appKit: modal),
+            )
+          else
+            TextButton.icon(
+              onPressed: () async {
+                await widget.service.initReown(context);
+                if (!context.mounted) return;
+                if (widget.service.reownError != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Reown Error: ${widget.service.reownError}')),
+                  );
+                }
+                setState(() {});
+              },
+              icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+              label: const Text('Connect'),
+            ),
           IconButton(
             tooltip: 'Muat ulang',
             onPressed: _sedangMemuat ? null : () => _muat(),
@@ -222,7 +305,9 @@ class _HomeScreenState extends State<HomeScreen> {
         judul: _data.isEmpty ? 'Belum ada sertifikat' : 'Tidak ada yang cocok',
         isi: _data.isEmpty
             ? 'Terbitkan sertifikat pertama lewat tab Terbitkan.'
-            : 'Ubah filter untuk melihat sertifikat lainnya.',
+            : _filter == FilterDaftar.milikku && wallet == null
+                ? 'Hubungkan wallet terlebih dahulu untuk melihat sertifikat milik Anda.'
+                : 'Ubah filter untuk melihat sertifikat lainnya.',
       );
     } else {
       isi = Column(
@@ -231,7 +316,8 @@ class _HomeScreenState extends State<HomeScreen> {
             SertifikatCard(
               key: ValueKey(s.id),
               sertifikat: s,
-              milikSaya: s.diterbitkanOleh(wallet),
+              milikSaya: wallet != null && s.diterbitkanOleh(wallet),
+              onEdit: () => _editNama(s),
               onCabut: () => _cabut(s),
             ),
         ],
@@ -250,11 +336,25 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 2),
           Text(
-            'Wallet penandatangan: ${potongAlamat(wallet.hexEip55)}',
+            wallet == null
+                ? 'Wallet: Belum terhubung (klik Connect Wallet di kanan atas)'
+                : 'Wallet terhubung: ${potongAlamat(wallet.hexEip55)}',
             style: tema.textTheme.bodySmall?.copyWith(
               color: tema.colorScheme.onSurfaceVariant,
             ),
           ),
+          if (wallet != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              _saldoEth == null
+                  ? 'Saldo: memuat...'
+                  : 'Saldo: ${_saldoEth!.toStringAsFixed(4)} SepoliaETH',
+              style: tema.textTheme.bodySmall?.copyWith(
+                color: tema.colorScheme.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
